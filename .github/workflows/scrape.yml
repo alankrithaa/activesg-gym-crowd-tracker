@@ -1,0 +1,35 @@
+name: Scrape ActiveSG Gym Crowds (6-Day Run)
+
+on:
+  schedule:
+    # Off-peak minutes (:13 and :43) prevent GitHub Actions cron queue drops
+    - cron: '13,43 * * * *'
+  workflow_dispatch: # Click "Run workflow" once to start your exact 6-day clock
+
+permissions:
+  contents: write
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 pandas pytz
+
+      - name: Run ActiveSG scraper
+        run: python scraper.py
+
+      - name: Commit and push updated data
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add activesg_gym_crowds.csv scrape_start_timestamp.txt
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Log ActiveSG gym crowd snapshot" && git push)
