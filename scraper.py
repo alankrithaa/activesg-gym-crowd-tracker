@@ -1,16 +1,15 @@
 import os
 import re
 import sys
-import requests
 import pandas as pd
-from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 import pytz
+from playwright.sync_api import sync_playwright
 
-URL = "https://activesg.gov.sg/gym-pool-crowd?tab=Gym"
+URL = "https://activesg.gov.sg/gym-pool-crowd"
 CSV_FILE = "activesg_gym_crowds.csv"
 START_TIME_FILE = "scrape_start_timestamp.txt"
-DURATION_DAYS = 6  # Runs for exactly 6 full days (144 hours) from the first run
+DURATION_DAYS = 6  # Runs for exactly 6 full days (144 hours) from first successful run
 SGT = pytz.timezone("Asia/Singapore")
 
 REGION_MAP = {
@@ -52,19 +51,29 @@ def check_6_day_window(now_sgt):
 def scrape():
     now_sgt = datetime.now(SGT)
 
-    # Stop automatically once 144 hours have elapsed from the very first run
     if not check_6_day_window(now_sgt):
         sys.exit(0)
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-    }
-    resp = requests.get(URL, headers=headers, timeout=20)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"]
+        )
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 800},
+            locale="en-SG",
+            timezone_id="Asia/Singapore"
+        )
+        page = context.new_page()
+        page.goto(URL, wait_until="networkidle", timeout=45000)
+        page.wait_for_timeout(3000)  # Give client-side crowd counters 3s to finish rendering
 
+        page_text = page.inner_text("body")
+        browser.close()
+
+    strings = [line.strip() for line in page_text.splitlines() if line.strip()]
     records = []
-    strings = [s.strip() for s in soup.stripped_strings if s.strip()]
 
     for i, text in enumerate(strings):
         if i == 0:
@@ -91,7 +100,9 @@ def scrape():
             })
 
     if not records:
-        raise RuntimeError("Parsed 0 gyms—ActiveSG page layout may have changed or uses client-side fetch.")
+        # Print first 500 chars of body text to help debug if selector ever shifts
+        print("DEBUG BODY PREVIEW:", page_text[:500])
+        raise RuntimeError("Parsed 0 gyms—check DEBUG BODY PREVIEW in logs.")
 
     df = pd.DataFrame(records).drop_duplicates(subset=["timestamp_sgt", "gym_name"])
     file_exists = os.path.isfile(CSV_FILE)

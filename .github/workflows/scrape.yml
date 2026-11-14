@@ -2,9 +2,8 @@ name: Scrape ActiveSG Gym Crowds (6-Day Run)
 
 on:
   schedule:
-    # Off-peak minutes (:13 and :43) prevent GitHub Actions cron queue drops
     - cron: '13,43 * * * *'
-  workflow_dispatch: # Click "Run workflow" once to start your exact 6-day clock
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -21,8 +20,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
-        run: pip install requests beautifulsoup4 pandas pytz
+      - name: Install dependencies and Chromium
+        run: |
+          pip install pandas pytz playwright
+          playwright install chromium --with-deps
 
       - name: Run ActiveSG scraper
         run: python scraper.py
