@@ -32,29 +32,33 @@ def get_region(gym_name):
             return region
     return "Other"
 
-def is_within_6_day_window(now_sgt):
-    if not os.path.isfile(START_TIME_FILE):
+def check_6_day_window(now_sgt):
+    if not os.path.isfile(START_TIME_FILE) or os.path.getsize(START_TIME_FILE) == 0:
+        with open(START_TIME_FILE, "w") as f:
+            f.write(now_sgt.isoformat())
+        print(f"Initialized 6-day window starting at: {now_sgt.strftime('%Y-%m-%d %H:%M:%S SGT')}")
         return True
+
     with open(START_TIME_FILE, "r") as f:
-        content = f.read().strip()
-        if not content:
-            return True
-        start_sgt = datetime.fromisoformat(content)
+        start_sgt = datetime.fromisoformat(f.read().strip())
+
     end_sgt = start_sgt + timedelta(days=DURATION_DAYS)
     if now_sgt > end_sgt:
-        print(f"6-day window completed (Ended: {end_sgt.strftime('%Y-%m-%d %H:%M:%S SGT')}).")
+        print(f"6-day window completed (Ended: {end_sgt.strftime('%Y-%m-%d %H:%M:%S SGT')}). Skipping scrape.")
         return False
     return True
 
 def scrape():
     now_sgt = datetime.now(SGT)
-    if not is_within_6_day_window(now_sgt):
+
+    if not check_6_day_window(now_sgt):
         sys.exit(0)
 
+    # Exact Playwright navigation that worked yesterday
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+            args=["--disable-blink-features=AutomationControlled"]
         )
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -63,37 +67,33 @@ def scrape():
             timezone_id="Asia/Singapore"
         )
         page = context.new_page()
-        # Use 'domcontentloaded' instead of 'networkidle' so background analytics don't time out
-        page.goto(URL, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_selector("text=/% full|Closed/i", timeout=30000)
-        page.wait_for_timeout(2000)
+        page.goto(URL, wait_until="networkidle", timeout=45000)
+        page.wait_for_timeout(3000)
 
         page_text = page.inner_text("body")
         browser.close()
 
-    lines = [line.strip() for line in page_text.splitlines() if line.strip()]
+    strings = [line.strip() for line in page_text.splitlines() if line.strip()]
     
-    # Isolate ONLY the Gym section (between 'Gym' tab/header and 'Pool' section)
-    in_gym_section = False
+    # Scope to the Gym section before Pool section appears
     gym_lines = []
-    for line in lines:
+    in_gym = False
+    for line in strings:
         if line == "Gym":
-            in_gym_section = True
+            in_gym = True
             continue
-        if in_gym_section:
+        if in_gym:
             if line in ("Pool", "Pools") or line.startswith("Last updated") or line.startswith("©"):
                 break
             gym_lines.append(line)
 
-    # Fallback if tab header layout changes
-    target_lines = gym_lines if len(gym_lines) >= 10 else lines
-
+    target_lines = gym_lines if len(gym_lines) >= 10 else strings
     records = []
-    for i in range(1, len(target_lines)):
-        text = target_lines[i]
-        facility_name = target_lines[i - 1]
 
-        # Skip navigation/tab words
+    for i, text in enumerate(target_lines):
+        if i == 0:
+            continue
+        facility_name = target_lines[i - 1]
         if facility_name.lower() in ("gym", "pool", "pools", "open", "closed") or "%" in facility_name:
             continue
 
@@ -117,11 +117,6 @@ def scrape():
     if not records:
         print("DEBUG BODY PREVIEW:", page_text[:800])
         raise RuntimeError("Parsed 0 gyms—check DEBUG BODY PREVIEW in logs.")
-
-    # Initialize 6-day window only on first actual data save
-    if not os.path.isfile(START_TIME_FILE) or os.path.getsize(START_TIME_FILE) == 0:
-        with open(START_TIME_FILE, "w") as f:
-            f.write(now_sgt.isoformat())
 
     df = pd.DataFrame(records).drop_duplicates(subset=["timestamp_sgt", "gym_name"])
     file_exists = os.path.isfile(CSV_FILE) and os.path.getsize(CSV_FILE) > 0
