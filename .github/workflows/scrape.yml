@@ -8,22 +8,30 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: activesg-scraper
+  cancel-in-progress: false
+
 jobs:
   scrape:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
-      - name: Install dependencies and Chromium
-        run: |
-          pip install pandas pytz playwright
-          playwright install chromium --with-deps
+      - name: Install Python dependencies
+        run: pip install pandas pytz playwright
+
+      - name: Install Playwright Chromium
+        run: playwright install chromium --with-deps
 
       - name: Run ActiveSG scraper
         run: python scraper.py
@@ -33,4 +41,10 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add activesg_gym_crowds.csv scrape_start_timestamp.txt
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Log ActiveSG gym crowd snapshot" && git push)
+          if ! git diff --staged --quiet; then
+            git commit -m "Log ActiveSG gym crowd snapshot"
+            git pull --rebase origin main
+            git push
+          else
+            echo "No new changes to commit."
+          fi
