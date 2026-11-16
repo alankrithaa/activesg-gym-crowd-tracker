@@ -1,7 +1,6 @@
 import os
 import re
 import sys
-import requests
 import pandas as pd
 from datetime import datetime, timedelta
 import pytz
@@ -38,86 +37,37 @@ def is_within_window(now_sgt):
         return True
     with open(START_TIME_FILE, "r") as f:
         start_sgt = datetime.fromisoformat(f.read().strip())
-    end_sgt = start_sgt + timedelta(days=DURATION_DAYS)
-    if now_sgt > end_sgt:
-        print(f"{DURATION_DAYS}-day window completed (Ended: {end_sgt.strftime('%Y-%m-%d %H:%M:%S SGT')}).")
-        return False
-    return True
+    return now_sgt <= (start_sgt + timedelta(days=DURATION_DAYS))
 
-def get_live_sg_proxies():
-    proxies = []
-    sources = [
-        "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=SG&ssl=all&anonymity=all",
-        "https://proxylist.geonode.com/api/proxy-list?limit=20&page=1&sort_by=lastChecked&sort_type=desc&country=SG&protocols=http"
-    ]
-    try:
-        r = requests.get(sources[0], timeout=10)
-        if r.ok:
-            for line in r.text.splitlines():
-                line = line.strip()
-                if ":" in line:
-                    proxies.append(f"http://{line}")
-    except Exception as e:
-        print(f"ProxyScrape warning: {e}")
-
-    try:
-        r = requests.get(sources[1], timeout=10)
-        if r.ok:
-            for item in r.json().get("data", []):
-                ip, port = item.get("ip"), item.get("port")
-                if ip and port:
-                    proxies.append(f"http://{ip}:{port}")
-    except Exception as e:
-        print(f"GeoNode warning: {e}")
-
-    return list(dict.fromkeys(proxies))
-
-def fetch_with_proxy(proxy_server=None):
-    blocked_types = {"image", "media", "font", "stylesheet"}
+def fetch_page_text():
     with sync_playwright() as p:
-        launch_args = {
-            "headless": True,
-            "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"]
-        }
-        if proxy_server:
-            launch_args["proxy"] = {"server": proxy_server}
-
-        browser = p.chromium.launch(**launch_args)
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"]
+        )
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
             viewport={"width": 1280, "height": 800},
             locale="en-SG",
-            timezone_id="Asia/Singapore",
-            ignore_https_errors=True
+            timezone_id="Asia/Singapore"
         )
-        context.route("**/*", lambda r: r.abort() if r.request.resource_type in blocked_types else r.continue_())
         page = context.new_page()
-        page.goto(URL, wait_until="commit", timeout=25000)
-        page.wait_for_function(
-            "() => /\\d+\\s*%\\s*full|\\bClosed\\b/i.test(document.body.innerText)",
-            timeout=25000
-        )
-        page.wait_for_timeout(1500)
-        text = page.inner_text("body")
+        page.goto(URL, wait_until="domcontentloaded", timeout=30000)
+        page.wait_for_timeout(8000)
+
+        title = page.title()
+        # Use textContent instead of innerText so CSS visibility never hides rendered text
+        raw_text = page.evaluate("() => document.body.textContent || ''")
+        inner_text = page.inner_text("body")
         browser.close()
-        return text
 
-def fetch_page_text():
-    candidates = [None] + get_live_sg_proxies()[:12]
-    print(f"Testing {len(candidates)} connection routes (direct + SG proxies)...")
+    print(f"Page Title: {title}")
+    if not re.search(r"\d+\s*%\s*full|\bClosed\b", inner_text, re.IGNORECASE):
+        print("DEBUG INNER_TEXT:", repr(inner_text[:600]))
+        print("DEBUG TEXT_CONTENT:", repr(raw_text[:600]))
+        raise RuntimeError(f"Crowd text missing on page (Title: {title})")
 
-    for idx, proxy in enumerate(candidates, start=1):
-        label = proxy if proxy else "Direct Connection"
-        try:
-            print(f"[{idx}/{len(candidates)}] Trying {label}...")
-            text = fetch_with_proxy(proxy)
-            if text and len(text.strip()) > 100:
-                print(f"Success via {label}!")
-                return text
-        except Exception as e:
-            print(f"Failed via {label}: {str(e).splitlines()[0]}")
-
-    raise RuntimeError("All direct and Singapore proxy routes failed.")
+    return inner_text
 
 def parse_gyms(page_text, now_sgt):
     strings = [line.strip() for line in page_text.splitlines() if line.strip()]
@@ -171,7 +121,6 @@ def scrape():
     if not os.path.isfile(START_TIME_FILE) or os.path.getsize(START_TIME_FILE) == 0:
         with open(START_TIME_FILE, "w") as f:
             f.write(now_sgt.isoformat())
-        print(f"Initialized {DURATION_DAYS}-day window starting at: {now_sgt.strftime('%Y-%m-%d %H:%M:%S SGT')}")
 
     df = pd.DataFrame(records).drop_duplicates(subset=["timestamp_sgt", "gym_name"])
     file_exists = os.path.isfile(CSV_FILE) and os.path.getsize(CSV_FILE) > 0
