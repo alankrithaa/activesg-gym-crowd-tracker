@@ -1,4 +1,4 @@
-name: Scrape ActiveSG Gym Crowds (6-Day Run)
+name: Scrape ActiveSG Gym Crowds (10-Day Run)
 
 on:
   schedule:
@@ -26,11 +26,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Python dependencies
-        run: pip install pandas pytz playwright
-
-      - name: Install Playwright Chromium
-        run: playwright install chromium --with-deps
+      - name: Install dependencies and Chromium
+        run: |
+          pip install pandas pytz playwright requests
+          playwright install chromium --with-deps
 
       - name: Run ActiveSG scraper
         run: python scraper.py
